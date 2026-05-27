@@ -2,7 +2,7 @@
 
 set -e
 
-VM_DIR="$HOME/dev/vms"
+VM_DIR="$(dirname "$(readlink -f "$0")")"
 
 detect_host_resources() {
     TOTAL_RAM=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
@@ -87,26 +87,10 @@ arg_mode() {
         show_help
         exit 1
     fi
-    if [ -z "$ISO_PATH" ]; then
-        echo "Error: --iso is required" >&2
-        show_help
-        exit 1
-    fi
-    if [ -z "$RAM" ]; then
-        echo "Error: --ram is required" >&2
-        show_help
-        exit 1
-    fi
-    if [ -z "$CPUS" ]; then
-        echo "Error: --cpus is required" >&2
-        show_help
-        exit 1
-    fi
-    if [ ! -f "$ISO_PATH" ]; then
+    if [ -n "$ISO_PATH" ] && [ ! -f "$ISO_PATH" ]; then
         echo "Error: ISO not found at $ISO_PATH" >&2
         exit 1
     fi
-    validate_resources "$RAM" "$CPUS"
 }
 
 show_help() {
@@ -120,14 +104,15 @@ Modes:
 
 Options:
   --name <name>  VM name (required)
-  --iso <path>   Path to ISO (required)
+  --iso <path>   Path to ISO (optional for launch/create)
   --disk <size>  Disk size, e.g. 64G (default: 64G)
-  --ram <mb>     RAM in MB (required)
-  --cpus <n>     Number of CPUs (required)
+  --ram <mb>     RAM in MB (default: half of host RAM)
+  --cpus <n>     Number of CPUs (default: host CPUs - 1)
   --help, -h     Show this help
 
 Examples:
   $0
+  $0 launch --name myvm
   $0 launch --name myvm --iso /path/to.iso --ram 4096 --cpus 2
   $0 create --name myvm --disk 32G
 EOF
@@ -146,21 +131,25 @@ create_disk() {
 launch_vm() {
     DISK_PATH="${VM_DIR}/${VM_NAME}.qcow2"
     echo "Launching $VM_NAME..."
-    qemu-system-x86_64 \
-        -name "$VM_NAME" \
-        -machine type=q35,accel=kvm \
-        -cpu host \
-        -smp "$CPUS" \
-        -m "$RAM" \
-        -drive file="$DISK_PATH",format=qcow2,if=virtio \
-        -cdrom "$ISO_PATH" \
-        -nic user,model=virtio \
-        -vga virtio \
-        -display gtk,show-cursor=on \
-        -usb \
-        -device usb-tablet \
-        -audiodev pa,id=snd0 \
+    local args=(
+        -name "$VM_NAME"
+        -machine type=q35,accel=kvm
+        -cpu host
+        -smp "$CPUS"
+        -m "$RAM"
+        -drive file="$DISK_PATH",format=qcow2,if=virtio
+        -nic user,model=virtio
+        -vga virtio
+        -display gtk,show-cursor=on,grab-on-hover=on
+        -usb
+        -device usb-tablet
+        -audiodev pa,id=snd0
         -device intel-hda -device hda-duplex,audiodev=snd0
+    )
+    if [ -n "$ISO_PATH" ]; then
+        args+=(-cdrom "$ISO_PATH")
+    fi
+    qemu-system-x86_64 "${args[@]}"
 }
 
 MODE="${1:-interactive}"
@@ -173,7 +162,15 @@ case "$MODE" in
     launch)
         shift
         arg_mode "$@"
-        create_disk
+        suggest_resources
+        RAM="${RAM:-$SUGGEST_RAM}"
+        CPUS="${CPUS:-$SUGGEST_CPUS}"
+        validate_resources "$RAM" "$CPUS"
+        DISK_PATH="${VM_DIR}/${VM_NAME}.qcow2"
+        if [ ! -f "$DISK_PATH" ]; then
+            echo "Error: Disk not found at $DISK_PATH" >&2
+            exit 1
+        fi
         launch_vm
         ;;
     create)
